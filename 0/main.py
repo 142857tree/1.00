@@ -2,11 +2,11 @@ import pandas as pd
 import numpy as np
 from utils import *
 from MyModel import MyModel
-
+import time
 def run_test():
     #########Load Model
     model = MyModel()
-
+    now_time=0#交删
     #########Load Day Data
     days = get_day_folders("./data")
 
@@ -29,6 +29,9 @@ def run_test():
             ]
             if tick_index %100==0:#最终提交时删掉！
                 print(tick_index)
+                print(f"用时：{time.perf_counter()-now_time}s")
+                input()
+                now_time = time.perf_counter()
             ###########Predict
             my_preds[tick_index] = model.online_predict(E_row_data, sector_row_datas)
 
