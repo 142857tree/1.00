@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import warnings
 import time
+import timeit
 warnings.filterwarnings('ignore')  # 忽略警告信息，让输出更干净
 
 
@@ -16,13 +17,14 @@ def predict_new_data(self, E_row, sector_rows):
     #self.whole_dataframe.to_csv("whole_data.csv", index=False)
     #print(self.whole_dataframe['Time'].iloc[-1])
     #print(".......;;;;;;")
-    #只保留最近15min的数据（即1800行）
+    #只保留最近15min的数据（即1800行,适当多一些）
     start=time.perf_counter()
-    if len(self.whole_dataframe) > 1800:
+    if len(self.whole_dataframe) > 1850:
         self.whole_dataframe=self.whole_dataframe.iloc[1:]
     end = time.perf_counter()
-    print(f"切片操作：{end-start}s")
-    test_features = create_all_features_enhanced(self.whole_dataframe)
+    #print(f"切片操作：{end-start}s")
+    test_features = create_all_features_enhanced(self.whole_dataframe, self.lst_tick_feature)
+    self.lst_tick_feature = test_features.iloc[0]
 
     #test_features.to_csv("test_features.csv")
     start=time.perf_counter()
@@ -34,10 +36,13 @@ def predict_new_data(self, E_row, sector_rows):
             for name in ['30s','1min','5min','10min']:
                 need_index.append(f'{stock_prefix}_ma_{name}')
             need_index.append(f'{stock_prefix}_price_momentum_5')
+            need_index.append(f'{stock_prefix}_cross_up_30s_1min')
+            need_index.append(f'{stock_prefix}_cross_down_30s_1min')
+            need_index.append(f'{stock_prefix}_order_imbalance')
         for index in need_index:
             self.whole_dataframe[index].iloc[-1] = test_features[index].iloc[0]
     end=time.perf_counter()
-    print(f"合并用时：{end-start}s")
+    #print(f"合并用时：{end-start}s")
     missing_features = set(self.selected_features) - set(test_features.columns)
     extra_features = set(test_features.columns) - set(self.selected_features)
 
@@ -53,7 +58,7 @@ def predict_new_data(self, E_row, sector_rows):
 
     # 按正确的顺序选择特征
     x_test = test_features[self.selected_features]
-
+    #print(f"标准化前用时{time.perf_counter()-start}s")
     # 标准化
     x_test_scaled = self.x_scaler.transform(x_test)
 
@@ -132,28 +137,32 @@ def merge_all_stocks_one_line(A_row,B_row,C_row,D_row,E_row):
 
 # ============ 第三部分：特征工程函数 ============
 
-def enhanced_stock_features(df, stock_prefix):
+def enhanced_stock_features(df, stock_prefix, lst_tick_feature):#参数增加上次计算的所有feature
     """增强版股票特征"""
     start=time.perf_counter()
     features = {}
-
+    df_now = df.iloc[-1]
+    if len(df) > 120:
+        df_before_1min = df.iloc[-121]#由于当前量和1min前的量计算较多，额外维护这两个量
+    else:
+        df_before_1min = pd.Series()
     # 基础价格列
     last_price_col = f'{stock_prefix}LastPrice'
-
+    stock_lst_price = df[last_price_col].values
     if last_price_col in df.columns:
         # === 价格趋势特征 ===
         # 1. 价格动量（短期、中期）
         for period in [5, 10, 20, 30, 60, 120]:  # 增加更多时间尺度
             _period = min(period, len(df)-1)
-            features[f'{stock_prefix}price_momentum_{period}'] = ((df[last_price_col].to_numpy())[-1] - (df[last_price_col].to_numpy())[-1-_period]) / (df[last_price_col].to_numpy())[-1-_period]
+            features[f'{stock_prefix}price_momentum_{period}'] = (stock_lst_price[-1] - stock_lst_price[-1-_period]) / stock_lst_price[-1-_period]
             #那这里最前面的几个值就NAN了是嘛（
 
         # 2. 价格波动范围
         for window in [60, 120, 300, 600]:  # 30秒到5分钟
-            roll_max = df[last_price_col].tail(window).max()
-            roll_min = df[last_price_col].tail(window).min()
+            roll_max = stock_lst_price[-window:].max()
+            roll_min = stock_lst_price[-window:].min()
             features[f'{stock_prefix}price_range_{window}'] = (roll_max - roll_min) / (roll_min + 1e-8)#何意味避免0嘛
-
+        #print(f"1、2用时{time.perf_counter()-start}s")
         # 3. 移动平均线特征
         ma_windows = {
             '30s': 60,  # 30秒 (比5分钟预测窗口短)
@@ -170,10 +179,13 @@ def enhanced_stock_features(df, stock_prefix):
         for name, window in ma_windows.items():
             ma_key = f'{stock_prefix}ma_{name}'
             # 使用适当的min_periods避免开头太多NaN(window中大于等于min_periods个数不为NAN，rolling就不为NAN)
-            min_periods = max(1, int(window * 0.1))
-            ma_dict[name] = df[last_price_col].tail(window).mean()
+            if len(df) == 1:
+                ma_dict[name] = stock_lst_price[-1]
+            elif len(df) <= window:
+                ma_dict[name] = (lst_tick_feature[ma_key] * (len(df)-1) + stock_lst_price[-1]) / len(df)
+            else:
+                ma_dict[name] = (lst_tick_feature[ma_key] * window + stock_lst_price[-1] - stock_lst_price[-window-1]) / window
             features[ma_key] = ma_dict[name]
-
         # 2. 价格相对于移动平均线的位置（核心特征）
         # 偏离度 = (价格 - MA) / MA
         for name in ['30s', '1min', '5min', '10min']:
@@ -191,24 +203,27 @@ def enhanced_stock_features(df, stock_prefix):
             ma_value = ma_dict[name]
             # 短期变化：最近1分钟的变化
             if len(df) > 120:
-                ma_value_before_1min = df[f'{stock_prefix}ma_{name}'].iloc[-120]
+                ma_value_before_1min = df_before_1min[f'{stock_prefix}ma_{name}']
             else:
                 ma_value_before_1min = np.nan
             change_1min = ma_value - ma_value_before_1min
             features[f'{stock_prefix}ma_{name}_change_1min'] = change_1min / (ma_value_before_1min + 1e-8)
 
             # 只保留需要的历史数据（span=300最多需要300个数据点）
-            max_span = 300
-            if len(df) > 1:
-                ma_value_truncated = df[f'{stock_prefix}ma_{name}'].tail(max_span-1)  # 不足300行则返回全部
-            else:
-                ma_value_truncated = pd.Series()
-            ma_value_truncated[df.index[-1]] = ma_value
+            alpha_short = 2/61
+            alpha_long = 2/301
+
             # 计算EMA后只取最后一个值（比全量计算快很多）
-            ema_short = ma_value_truncated.ewm(span=60, adjust=False).mean().iloc[-1]
-            ema_long = ma_value_truncated.ewm(span=300, adjust=False).mean().iloc[-1]
+            if len(df) > 1:
+                ema_short = lst_tick_feature[f'{stock_prefix}ma_{name}_ema_short'] * (1-alpha_short) + df_now[f'{stock_prefix}ma_{name}'] * alpha_short
+                ema_long = lst_tick_feature[f'{stock_prefix}ma_{name}_ema_long'] * (1-alpha_long) + df_now[f'{stock_prefix}ma_{name}'] * alpha_long
+            else:
+                ema_short = stock_lst_price[-1]
+                ema_long = ema_short
 
             # 趋势强度计算
+            features[f'{stock_prefix}ma_{name}_ema_short'] = ema_short
+            features[f'{stock_prefix}ma_{name}_ema_long'] = ema_long
             trend_strength = (ema_short - ema_long) / (ema_long + 1e-8)
             features[f'{stock_prefix}ma_{name}_trend_strength'] = trend_strength
 
@@ -218,16 +233,16 @@ def enhanced_stock_features(df, stock_prefix):
             ma_1min = ma_dict['1min']
             ma_5min = ma_dict['5min']
             if len(df) > 1:
-                ma_30s_last=df[f'{stock_prefix}ma_{"30s"}'].iloc[-1]#overall_dataframe里面的上一个均线
-                ma_5min_last=df[f'{stock_prefix}ma_{"5min"}'].iloc[-1]
-                ma_1min_last=df[f'{stock_prefix}ma_{"1min"}'].iloc[-1]
+                ma_30s_last=df_now[f'{stock_prefix}ma_{"30s"}']#overall_dataframe里面的上一个均线
+                ma_5min_last=df_now[f'{stock_prefix}ma_{"5min"}']
+                ma_1min_last=df_now[f'{stock_prefix}ma_{"1min"}']
             else:
                 ma_30s_last = np.nan
                 ma_5min_last = np.nan
                 ma_1min_last = np.nan
 
 
-            print(f"目前用时（金叉前）{time.perf_counter()-start}s")
+            #print(f"目前用时（金叉前）{time.perf_counter()-start}s")
             # 4.1 基本金叉死叉信号
             # 30秒线上穿1分钟线
             cross_up_30s_1min = (ma_30s > ma_1min) & (ma_30s_last <= ma_1min_last)
@@ -236,7 +251,6 @@ def enhanced_stock_features(df, stock_prefix):
             # 1分钟线上穿5分钟线（传统金叉）
             cross_up_1min_5min = (ma_1min > ma_5min) & (ma_1min_last <= ma_5min_last)
             cross_down_1min_5min = (ma_1min < ma_5min) & (ma_1min_last >= ma_5min_last)
-
             features[f'{stock_prefix}cross_up_30s_1min'] = cross_up_30s_1min.astype(int)
             features[f'{stock_prefix}cross_down_30s_1min'] = cross_down_30s_1min.astype(int)
             features[f'{stock_prefix}cross_up_1min_5min'] = cross_up_1min_5min.astype(int)
@@ -246,17 +260,13 @@ def enhanced_stock_features(df, stock_prefix):
             # 距离上次金叉的时间（tick数）
             for cross_name, cross_signal, name_in_dataframe in [('up_1min_5min', cross_up_1min_5min, f'{stock_prefix}cross_up_1min_5min'),
                                              ('down_1min_5min', cross_down_1min_5min, f'{stock_prefix}cross_down_1min_5min')]:
-                # 标记金叉发生的位置
-                if len(df) > 1:
-                    cross_idx = df[name_in_dataframe][df[name_in_dataframe] == 1].last_valid_index()
+                # 标记金叉发生离现在的时间
+                if (len(df) > 1) & (features[name_in_dataframe]):
+                    features[f'{stock_prefix}ticks_since_{cross_name}'] = 0
+                elif len(df) ==1:
+                    features[f'{stock_prefix}ticks_since_{cross_name}'] = 9999
                 else:
-                    cross_idx = None
-                if cross_idx is not None:
-                    # 计算距离上次金叉的时间
-                    time_since_cross = len(df) - cross_idx
-                    features[f'{stock_prefix}ticks_since_{cross_name}'] = time_since_cross
-                else:
-                    features[f'{stock_prefix}ticks_since_{cross_name}'] = 9999  # 很大值表示很久没有
+                    features[f'{stock_prefix}ticks_since_{cross_name}'] = max(9999, lst_tick_feature[name_in_dataframe] + 1)
 
             # 4.3 均线排列状态（多头/空头排列）
             # 多头排列：短期 > 中期 > 长期
@@ -273,7 +283,7 @@ def enhanced_stock_features(df, stock_prefix):
             alignment_strength = ma_diff_30s_1min + ma_diff_1min_5min
             features[f'{stock_prefix}alignment_strength'] = alignment_strength
 
-        print(f"目前用时：{time.perf_counter()-start}s")
+        #print(f"目前用时：{time.perf_counter()-start}s")
         # 5. 移动平均线带宽特征（MA间的距离）
         if all(name in ma_dict for name in ['30s', '5min']):
             ma_30s = ma_dict['30s']
@@ -285,20 +295,20 @@ def enhanced_stock_features(df, stock_prefix):
 
             # 带宽的变化率
             if len(df) > 120:
-                bandwidth_change = ma_bandwidth - df[f'{stock_prefix}ma_bandwidth'].iloc[-120]  # 1分钟变化
+                bandwidth_change = ma_bandwidth - df_before_1min[f'{stock_prefix}ma_bandwidth']  # 1分钟变化
             else:
                 bandwidth_change = np.nan
             features[f'{stock_prefix}ma_bandwidth_change'] = bandwidth_change
+        #print(f"5目前用时：{time.perf_counter() - start}s")
 
         # 6. 价格与MA的背离特征
         if all(name in ma_dict for name in ['1min', '5min']):
-            price = df[last_price_col]
             ma_1min = ma_dict['1min']
             ma_5min = ma_dict['5min']
 
             # 计算价格和MA的动量
             if len(df) > 60:
-                price_momentum = price.iloc[-1] - price.iloc[-61]  # 30秒动量
+                price_momentum = stock_lst_price[-1] - stock_lst_price[-61]  # 30秒动量
                 ma_1min_momentum = ma_1min - df[f'{stock_prefix}ma_1min'].iloc[-60]
                 ma_5min_momentum = ma_5min - df[f'{stock_prefix}ma_5min'].iloc[-60]
             else:
@@ -314,71 +324,87 @@ def enhanced_stock_features(df, stock_prefix):
 
             features[f'{stock_prefix}divergence_1min'] = int(divergence_1min)
             features[f'{stock_prefix}divergence_5min'] = int(divergence_5min)
-
+        #print(f"5目前用时：{time.perf_counter() - start}s")
         # 4. 收益率波动率（使用1期收益率）
         ret_1 = []
-        price = df[last_price_col]
         for i in range(0,30):
             if len(df) > 30-i:
-                ret_1.append((price.iloc[i-30] - price.iloc[i-31]) / price.iloc[i-31])
+                ret_1.append((stock_lst_price[i-30] - stock_lst_price[i-31]) / stock_lst_price[i-31])
             else:
                 ret_1.append(np.nan)
         ret_1=pd.Series(ret_1)
         features[f'{stock_prefix}ret_volatility_10'] = ret_1[-10:].std()
         features[f'{stock_prefix}ret_volatility_20'] = ret_1[-20:].std()
         features[f'{stock_prefix}ret_volatility_30'] = ret_1[-30:].std()
-
+        #print(f"6目前用时：{time.perf_counter() - start}s")
     # === 成交量特征 ===
     # 成交量加权价格
 
-    if (f'{stock_prefix}LastPrice' in df.columns and
-            f'{stock_prefix}Volume' in df.columns):
+    now_all_price = df_now[f'{stock_prefix}TradeBuyAmount'] + df_now[f'{stock_prefix}TradeSellAmount']
+    now_volume = df_now[f'{stock_prefix}TradeBuyVolume'] + df_now[f'{stock_prefix}TradeSellVolume']
+    price = now_all_price / now_volume
 
-        price = df[f'{stock_prefix}LastPrice']
-        volume = df[f'{stock_prefix}Volume']
+    for window in [120, 600, 1200]:  # 1分钟、5分钟、10分钟VWAP
 
-        for window in [120, 600, 1200]:  # 1分钟、5分钟、10分钟VWAP
-            vwap = (price * volume).tail(window).sum() / volume.tail(window).sum()
-            features[f'{stock_prefix}vwap_{window}'] = vwap
-            features[f'{stock_prefix}price_vwap_diff_{window}'] = price - vwap
-            features[f'{stock_prefix}price_vwap_ratio_{window}'] = price / (vwap + 1e-8) - 1
-
+        if len(df) == 1:
+            all_price_sum = now_all_price
+            volume_sum = now_volume
+        elif len(df) <= window:
+            all_price_sum = now_all_price + lst_tick_feature[f'{stock_prefix}all_price_{window}']
+            volume_sum = now_volume + lst_tick_feature[f'{stock_prefix}volume_{window}']
+        else:
+            all_price_sum = now_all_price + lst_tick_feature[f'{stock_prefix}all_price_{window}'] - df[f'{stock_prefix}TradeBuyAmount'].iloc[-1-window] - df[f'{stock_prefix}TradeSellAmount'].iloc[-1-window]
+            volume_sum = now_volume + lst_tick_feature[f'{stock_prefix}volume_{window}'] - df[f'{stock_prefix}TradeBuyVolume'].iloc[-1-window] - df[f'{stock_prefix}TradeSellVolume'].iloc[-1-window]
+        features[f'{stock_prefix}all_price_{window}'] = all_price_sum
+        features[f'{stock_prefix}volume_{window}'] = volume_sum
+        vwap = all_price_sum / volume_sum
+        features[f'{stock_prefix}vwap_{window}'] = vwap
+        features[f'{stock_prefix}price_vwap_diff_{window}'] = price - vwap
+        features[f'{stock_prefix}price_vwap_ratio_{window}'] = price / (vwap + 1e-8) - 1
+    #print(f"7目前用时：{time.perf_counter() - start}s")
     # === 委托深度特征 ===
-    bid_volume_cols = [f'{stock_prefix}BidVolume{i}' for i in range(1, 6)]
-    ask_volume_cols = [f'{stock_prefix}AskVolume{i}' for i in range(1, 6)]
+    bid_pos = [df.columns.get_loc(f'{stock_prefix}BidVolume{i}') for i in range(1, 6)]
+    ask_pos = [df.columns.get_loc(f'{stock_prefix}AskVolume{i}') for i in range(1, 6)]
 
-    if all(col in df.columns for col in bid_volume_cols + ask_volume_cols):
-        # 5档深度不平衡
-        total_bid_depth = df[bid_volume_cols].iloc[-1].sum(axis=1)
-        total_ask_depth = df[ask_volume_cols].iloc[-1].sum(axis=1)
-        total_bid_depth_before_1min = df[bid_volume_cols].iloc[-121].sum(axis=1)
-        total_ask_depth_before_1min = df[ask_volume_cols].iloc[-121].sum(axis=1)
-        total_bid_depth_change_1min = (total_bid_depth-total_bid_depth_before_1min)/total_bid_depth_before_1min
-        total_ask_depth_change_1min = (total_ask_depth-total_ask_depth_before_1min)/total_ask_depth_before_1min
+    # 一次性选取行和列，避免链式索引
+    total_bid_depth = df_now.iloc[bid_pos].sum()
+    total_ask_depth = df_now.iloc[ask_pos].sum()
 
-        features[f'{stock_prefix}depth_imbalance'] = (
-                                                             total_bid_depth - total_ask_depth
-                                                     ) / (total_bid_depth + total_ask_depth + 1e-6)
+    if len(df) > 120:
+        total_bid_depth_before_1min = df_before_1min.iloc[bid_pos].sum()
+        total_ask_depth_before_1min = df_before_1min.iloc[ask_pos].sum()
+    else:
+        total_bid_depth_before_1min = np.nan
+        total_ask_depth_before_1min = np.nan
+    total_bid_depth_change_1min = (total_bid_depth-total_bid_depth_before_1min)/total_bid_depth_before_1min
+    total_ask_depth_change_1min = (total_ask_depth-total_ask_depth_before_1min)/total_ask_depth_before_1min
 
-        # 深度变化率
-        features[f'{stock_prefix}depth_change'] = total_bid_depth_change_1min-total_ask_depth_change_1min
+    features[f'{stock_prefix}depth_imbalance'] = (total_bid_depth - total_ask_depth) / (total_bid_depth + total_ask_depth + 1e-6)
 
+    # 深度变化率
+    features[f'{stock_prefix}depth_change'] = total_bid_depth_change_1min-total_ask_depth_change_1min
+
+
+    #print(f"8目前用时：{time.perf_counter() - start}s")
     # === 订单流不平衡（高级版）===
     if (f'{stock_prefix}OrderBuyVolume' in df.columns and
             f'{stock_prefix}OrderSellVolume' in df.columns):
         # 订单流不平衡
         order_imbalance = (
-                                  df[f'{stock_prefix}OrderBuyVolume'].iloc[-1] -
-                                  df[f'{stock_prefix}OrderSellVolume'].iloc[-1]
-                          ) / (df[f'{stock_prefix}OrderBuyVolume'].iloc[-1] + df[f'{stock_prefix}OrderSellVolume'].iloc[-1] + 1e-6)
+                                  df_now[f'{stock_prefix}OrderBuyVolume'] -
+                                  df_now[f'{stock_prefix}OrderSellVolume']
+                          ) / (df_now[f'{stock_prefix}OrderBuyVolume'] + df_now[f'{stock_prefix}OrderSellVolume'] + 1e-6)
 
         features[f'{stock_prefix}order_imbalance'] = order_imbalance
-        features[f'{stock_prefix}order_imbalance_ma'] = pd.Series(features[f'{stock_prefix}order_imbalance']).tail(120).mean()
-
+        if len(df) > 120:
+            features[f'{stock_prefix}order_imbalance_ma'] = (lst_tick_feature[f'{stock_prefix}order_imbalance_ma'] * 120 + features[f'{stock_prefix}order_imbalance'] - df[f'{stock_prefix}order_imbalance'].iloc[-120])/120
+        elif len(df) > 1:
+            features[f'{stock_prefix}order_imbalance_ma'] = (lst_tick_feature[f'{stock_prefix}order_imbalance_ma'] * (len(df)-1) + features[f'{stock_prefix}order_imbalance'])/len(df)
+        else:
+            features[f'{stock_prefix}order_imbalance_ma'] = features[f'{stock_prefix}order_imbalance']
     end=time.perf_counter()
-    print(f"enhanced_stock_features用时：{end-start}s")
+    #print(f"enhanced_stock_features用时：{end-start}s")
     return features
-
 
 
 
@@ -406,7 +432,7 @@ def post_process_ma_features(features_df, stock_prefix='E'):
         ).astype(int)
 
     end=time.perf_counter()
-    print(f"post_process_ma_features用时：{end-start}s")
+    #print(f"post_process_ma_features用时：{end-start}s")
     return features_df.squeeze().to_dict()
 
 
@@ -431,7 +457,7 @@ def enhanced_sector_features(stock_features_dict):
         sector_features['E_ma_deviation_rank'] = (ma_df.T > e_ma).sum() / len(ma_features)
 
     end=time.perf_counter()
-    print(f"enhanced_sector_features用时：{end-start}s")
+    #print(f"enhanced_sector_features用时：{end-start}s")
     return sector_features
 
 
@@ -476,14 +502,16 @@ def add_e_specific_features(df,stock_features_dict):
         # 3. E股动量符号
         e_features['E_momentum_sign'] = np.sign(e_momentum_5.iloc[-1])
 
+
         # 4. E股连续上涨/下跌次数
         sign_series = np.sign(e_momentum_5)
+
         lst_pos = e_momentum_5[sign_series * e_momentum_5 < 0].last_valid_index()
         if lst_pos is None:
             consecutive = 0
         else:
             consecutive = len(e_momentum_5)- lst_pos
-        e_features['E_consecutive_direction'] = consecutive * sign_series
+        e_features['E_consecutive_direction'] = consecutive * sign_series.iloc[-1]
 
     # E股与其他股票的互动
     for stock in ['A', 'B', 'C', 'D']:
@@ -498,11 +526,11 @@ def add_e_specific_features(df,stock_features_dict):
             e_features[f'E_{stock}_momentum_ratio'] = e_momentum / (abs(stock_momentum) + 1e-6)
 
     end=time.perf_counter()
-    print(f"add_e用时:{end-start}s")
+    #print(f"add_e用时:{end-start}s")
     return e_features
 
 
-def create_all_features_enhanced(df):
+def create_all_features_enhanced(df, lst_tick_feature):
     start = time.perf_counter()
     """增强版特征创建features+target"""
     #print("开始创建增强版特征...")
@@ -513,7 +541,7 @@ def create_all_features_enhanced(df):
     for stock in ['A', 'B', 'C', 'D', 'E']:
         #print(f"  创建{stock}股增强特征...")
         # 增强特征
-        features = enhanced_stock_features(df, f'{stock}_')
+        features = enhanced_stock_features(df, f'{stock}_', lst_tick_feature)
         stock_features_dict.update(features)
         #print(type(features))
         # 对MA特征进行后处理（主要对E股票）
@@ -532,17 +560,20 @@ def create_all_features_enhanced(df):
     #print(df['Time'].iloc[-1])
     #print("????????")
     time_features = enhanced_time_features(int(df['Time'].iloc[-1]))
+    all_features_dict = {}
+    all_features_dict.update(stock_features_dict)
+    all_features_dict.update(sector_features)
+    all_features_dict.update(time_features)
 
-    all_features = pd.DataFrame(stock_features_dict)
-    all_features = all_features.join(pd.DataFrame([sector_features]))
-    all_features = all_features.join(pd.DataFrame(time_features))
+
+    all_features = pd.DataFrame([all_features_dict])
     #all_features.rename(index={0: df['Time'].iloc[-1]}, inplace=True)
 
 
 
     all_features = all_features.fillna(0)
     end=time.perf_counter()
-    print(f"create_all_features总用时:{end-start}s")
+    #print(f"create_all_features总用时:{end-start}s")
     #input()
     return all_features.iloc[[-1]]
 

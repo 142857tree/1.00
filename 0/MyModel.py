@@ -14,10 +14,12 @@ class MyModel:
         self.x_scaler = joblib.load(scaler_path)
         # target_scaler = joblib.load('target_scaler_enhanced.pkl')
         self.selected_features = joblib.load(features_path)
-        self.whole_dataframe=pd.DataFrame()
+        self.whole_dataframe = pd.DataFrame()
+        self.lst_tick_feature = pd.Series()
 
     def reset(self):
-        pass
+        self.whole_dataframe=pd.DataFrame()
+        self.lst_tick_feature = pd.Series()
 
 
     def online_predict(self, E_row, sector_rows):

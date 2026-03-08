@@ -3,10 +3,13 @@ import numpy as np
 from utils import *
 from MyModel import MyModel
 import time
+import timeit
+
 def run_test():
     #########Load Model
     model = MyModel()
-    now_time=0#交删
+    now_time=time.perf_counter()#交删
+    start_time=time.perf_counter()
     #########Load Day Data
     days = get_day_folders("./data")
 
@@ -18,8 +21,11 @@ def run_test():
         ticktimes = day_data['E'].values.T[0, :]
         my_preds = np.zeros((n_ticks))
 
+
+
         for tick_index in range(n_ticks):
             ###########Get Tick Data(E and Sector)
+            tick_time=time.perf_counter()
             E_row_data = day_data['E'].iloc[tick_index]
             sector_row_datas = [
                 day_data['A'].iloc[tick_index],
@@ -27,13 +33,17 @@ def run_test():
                 day_data['C'].iloc[tick_index],
                 day_data['D'].iloc[tick_index]
             ]
-            if tick_index %100==0:#最终提交时删掉！
+
+            if (tick_index %1000==0):#最终提交时删掉！
                 print(tick_index)
                 print(f"用时：{time.perf_counter()-now_time}s")
+                print(f"总用时：{time.perf_counter()-start_time}s")
+                #time.sleep(2)
                 input()
                 now_time = time.perf_counter()
             ###########Predict
             my_preds[tick_index] = model.online_predict(E_row_data, sector_row_datas)
+            #print(f"一次总用时：{time.perf_counter() - tick_time}s")
 
         ###########Save Data
         if os.path.exists("./output/"+day) is not True:
@@ -43,6 +53,10 @@ def run_test():
         out_frame.columns = columns
         out_frame.to_csv("./output/"+day+"/E.csv", index=False)
         print ("Submit Day", day)
+        print("开始重置数据")
+        model.reset()
+        print(f"第{day}天结束，用时{time.perf_counter()-start_time}s")
+        input()
 
     
 if __name__ == '__main__':
