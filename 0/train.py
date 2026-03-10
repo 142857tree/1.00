@@ -525,7 +525,7 @@ def create_all_features_enhanced(df):
     #print(f"增强特征创建完成，最终{len(all_features)}行，{len(all_features.columns)}个特征")
 
     #print(all_features.iloc[[-1]])
-    return all_features.iloc[[-1]]
+    return all_features
 
 
 def feature_post_processing(features_df):
@@ -693,15 +693,14 @@ def clean_target_outliers(y, n_sigma=3):#在这段代码里，这个函数没有
 def train_enhanced_lightgbm(x_train, y_train, x_val, y_val):
     """LightGBM训练"""
     print("\n开始训练...")
-
     # 转换数据
     x_train_np = np.asarray(x_train, dtype=np.float32)
     x_val_np = np.asarray(x_val, dtype=np.float32)
     y_train_np = np.asarray(y_train, dtype=np.float32)
     y_val_np = np.asarray(y_val, dtype=np.float32)
 
-    train_data = lgb.Dataset(x_train_np, label=y_train_np)
-    val_data = lgb.Dataset(x_val_np, label=y_val_np, reference=train_data)
+    train_data = lgb.Dataset(x_train_np, label=y_train_np,feature_name=x_train.columns.tolist())
+    val_data = lgb.Dataset(x_val_np, label=y_val_np, reference=train_data,feature_name=x_val.columns.tolist())
 
     # 优化后的参数
     params = {
@@ -742,10 +741,11 @@ def train_enhanced_lightgbm(x_train, y_train, x_val, y_val):
     print('在训练过程中绘图...')
 
     print('画出特征重要度...')
-    ax = lgb.plot_importance(model, max_num_features=10)
+    ax = lgb.plot_importance(model, max_num_features=10,figsize=(20,8))
+    plt.subplots_adjust(left=0.3)
     plt.show()
 
-    print('画出第84颗树...')
+    print('画出第84棵树...')
     ax = lgb.plot_tree(model, tree_index=4, figsize=(20, 8), show_info=['split_gain'])
     plt.show()
 
@@ -812,7 +812,6 @@ def main_enhanced():
 
     merged_data = pd.concat(all_days_data, ignore_index=True)
     merged_data = merged_data.sort_values('Time').reset_index(drop=True)
-
     # 2. 增强版特征工程（全部数据上创建特征，但只做基本处理）
     print("\n[步骤2] 增强版特征工程")
     features_df = create_all_features_enhanced(merged_data)
@@ -823,6 +822,7 @@ def main_enhanced():
     # 现在获得包含所有特征和目标的数据集
     x_full = features_df.drop(columns=['target'])
     y_full = features_df['target']
+    x_full.to_csv("11111.csv", index=False)
 
     # 4. 时间序列交叉验证（内部进行特征选择）
     print("\n[步骤3] 时间序列交叉验证 (内部特征选择)")
@@ -854,7 +854,7 @@ def main_enhanced():
         # 根据选出的特征提取训练集和验证集
         x_train = x_train_full[selected_features_fold]
         x_val = x_val_full[selected_features_fold]
-
+        print(x_train_full.columns)
         # ---------- 目标变量异常值清洗（基于训练集统计量） ----------删过高过低
         y_train_mean = y_train_full.mean()
         y_train_std = y_train_full.std()
@@ -868,10 +868,17 @@ def main_enhanced():
         print(f"  目标变量清洗后范围：[{y_train.min():.6f}, {y_train.max():.6f}]")
 
         # ---------- 标准化 ----------
+        from pandas import DataFrame
+        print(x_train.columns)
         scaler = StandardScaler()
-        x_train_scaled = scaler.fit_transform(x_train)
-        x_val_scaled = scaler.transform(x_val)
-
+        x_train_scaled = DataFrame(scaler.fit_transform(x_train),
+                                   columns=x_train.columns,
+                                   index=x_train.index)
+        x_val_scaled = DataFrame(scaler.transform(x_val),
+                                 columns=x_val.columns,
+                                 index=x_val.index)
+        print(x_train)
+        print(x_train_scaled)
         # ---------- 训练模型 ----------
         model = train_enhanced_lightgbm(
             x_train_scaled, y_train,
@@ -899,7 +906,7 @@ def main_enhanced():
     print(f"平均Rank IC：{np.mean(rank_ic_scores):.4f} (±{np.std(rank_ic_scores):.4f})")
 
     # 6. 如果效果达标，使用全部数据训练最终模型（这里有没有优化的余地）
-    if avg_ic > 0.1:
+    if avg_ic > 0.05:
         print("\n[步骤5] 训练最终模型（使用全部数据）")
 
         # 在全部数据上重新进行特征选择（保持一致性）
