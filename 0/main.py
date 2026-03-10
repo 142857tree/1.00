@@ -2,14 +2,15 @@ import pandas as pd
 import numpy as np
 from utils import *
 from MyModel import MyModel
-import time
-import timeit
+#import time
+#import timeit
 
 def run_test():
     #########Load Model
     model = MyModel()
-    now_time=time.perf_counter()#交删
-    start_time=time.perf_counter()
+    #now_time=time.perf_counter()#交删
+    #start_time=time.perf_counter()
+    print("开始测试，一天数据预计用时60分钟")
     #########Load Day Data
     days = get_day_folders("./data")
 
@@ -25,7 +26,7 @@ def run_test():
 
         for tick_index in range(n_ticks):
             ###########Get Tick Data(E and Sector)
-            tick_time=time.perf_counter()
+            #tick_time=time.perf_counter()
             E_row_data = day_data['E'].iloc[tick_index]
             sector_row_datas = [
                 day_data['A'].iloc[tick_index],
@@ -34,13 +35,7 @@ def run_test():
                 day_data['D'].iloc[tick_index]
             ]
 
-            if (tick_index %1000==0):#最终提交时删掉！
-                print(tick_index)
-                print(f"用时：{time.perf_counter()-now_time}s")
-                print(f"总用时：{time.perf_counter()-start_time}s")
-                #time.sleep(2)
-                input()
-                now_time = time.perf_counter()
+
             ###########Predict
             my_preds[tick_index] = model.online_predict(E_row_data, sector_row_datas)
             #print(f"一次总用时：{time.perf_counter() - tick_time}s")
@@ -55,8 +50,8 @@ def run_test():
         print ("Submit Day", day)
         print("开始重置数据")
         model.reset()
-        print(f"第{day}天结束，用时{time.perf_counter()-start_time}s")
-        input()
+        #print(f"第{day}天结束，用时{time.perf_counter()-start_time}s")
+        #input()
 
     
 if __name__ == '__main__':
