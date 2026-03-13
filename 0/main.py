@@ -8,8 +8,6 @@ from MyModel import MyModel
 def run_test():
     #########Load Model
     model = MyModel()
-    #now_time=time.perf_counter()#交删
-    #start_time=time.perf_counter()
     print("开始测试，一天数据预计用时60分钟")
     #########Load Day Data
     days = get_day_folders("./data")

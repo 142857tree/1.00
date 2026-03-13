@@ -3,8 +3,8 @@
 import pandas as pd
 import numpy as np
 import warnings
-import time
-import timeit
+#import time
+#import timeit
 warnings.filterwarnings('ignore')  # 忽略警告信息，让输出更干净
 
 
@@ -18,16 +18,16 @@ def predict_new_data(self, E_row, sector_rows):
     #print(self.whole_dataframe['Time'].iloc[-1])
     #print(".......;;;;;;")
     #只保留最近15min的数据（即1800行,适当多一些）
-    start=time.perf_counter()
+    #start=time.perf_counter()
     if len(self.whole_dataframe) > 1850:
         self.whole_dataframe=self.whole_dataframe.iloc[1:]
-    end = time.perf_counter()
+    #end = time.perf_counter()
     #print(f"切片操作：{end-start}s")
     test_features = create_all_features_enhanced(self.whole_dataframe, self.lst_tick_feature)
     self.lst_tick_feature = test_features.iloc[0]
 
     #test_features.to_csv("test_features.csv")
-    start=time.perf_counter()
+    #start=time.perf_counter()
     if len(self.whole_dataframe) == 1:
         self.whole_dataframe = pd.concat([self.whole_dataframe,test_features],axis=1)
     else:
@@ -41,7 +41,7 @@ def predict_new_data(self, E_row, sector_rows):
             need_index.append(f'{stock_prefix}_order_imbalance')
         for index in need_index:
             self.whole_dataframe[index].iloc[-1] = test_features[index].iloc[0]
-    end=time.perf_counter()
+    #end=time.perf_counter()
     #print(f"合并用时：{end-start}s")
     missing_features = set(self.selected_features) - set(test_features.columns)
     extra_features = set(test_features.columns) - set(self.selected_features)
@@ -139,7 +139,6 @@ def merge_all_stocks_one_line(A_row,B_row,C_row,D_row,E_row):
 
 def enhanced_stock_features(df, stock_prefix, lst_tick_feature):#参数增加上次计算的所有feature
     """增强版股票特征"""
-    start=time.perf_counter()
     features = {}
     df_now = df.iloc[-1]
     if len(df) > 120:
@@ -363,6 +362,7 @@ def enhanced_stock_features(df, stock_prefix, lst_tick_feature):#参数增加上
         features[f'{stock_prefix}price_vwap_ratio_{window}'] = price / (vwap + 1e-8) - 1
     #print(f"7目前用时：{time.perf_counter() - start}s")
     # === 委托深度特征 ===
+    #print(df.columns)
     bid_pos = [df.columns.get_loc(f'{stock_prefix}BidVolume{i}') for i in range(1, 6)]
     ask_pos = [df.columns.get_loc(f'{stock_prefix}AskVolume{i}') for i in range(1, 6)]
 
@@ -402,8 +402,6 @@ def enhanced_stock_features(df, stock_prefix, lst_tick_feature):#参数增加上
             features[f'{stock_prefix}order_imbalance_ma'] = (lst_tick_feature[f'{stock_prefix}order_imbalance_ma'] * (len(df)-1) + features[f'{stock_prefix}order_imbalance'])/len(df)
         else:
             features[f'{stock_prefix}order_imbalance_ma'] = features[f'{stock_prefix}order_imbalance']
-    end=time.perf_counter()
-    #print(f"enhanced_stock_features用时：{end-start}s")
     return features
 
 
@@ -416,7 +414,6 @@ def post_process_ma_features(features_df, stock_prefix='E'):
     #print(len(features_df))
     #print("*")
     # 3. 创建MA特征组合（交互特征）
-    start=time.perf_counter()
     if f'{stock_prefix}price_vs_ma_30s_pct' in features_df.columns and \
             f'{stock_prefix}price_vs_ma_5min_pct' in features_df.columns:
         # 短期偏离与长期偏离的差异
@@ -431,13 +428,10 @@ def post_process_ma_features(features_df, stock_prefix='E'):
                 np.sign(features_df[f'{stock_prefix}price_vs_ma_5min_pct'])
         ).astype(int)
 
-    end=time.perf_counter()
-    #print(f"post_process_ma_features用时：{end-start}s")
     return features_df.squeeze().to_dict()
 
 
 def enhanced_sector_features(stock_features_dict):
-    start=time.perf_counter()
     sector_features = {}
     # 收集所有股票的ma_10min_pct特征
     ma_features = []
@@ -456,8 +450,6 @@ def enhanced_sector_features(stock_features_dict):
         e_ma = ma_df.iloc[-1]
         sector_features['E_ma_deviation_rank'] = (ma_df.T > e_ma).sum() / len(ma_features)
 
-    end=time.perf_counter()
-    #print(f"enhanced_sector_features用时：{end-start}s")
     return sector_features
 
 
@@ -480,7 +472,6 @@ def enhanced_time_features(now_time):
 
 def add_e_specific_features(df,stock_features_dict):
     """为E股添加特定特征（预测目标）"""
-    start=time.perf_counter()
     e_features = {}
 
     # E股的各种收益率
@@ -525,13 +516,10 @@ def add_e_specific_features(df,stock_features_dict):
             # 6. E股与其他股票动量的比率
             e_features[f'E_{stock}_momentum_ratio'] = e_momentum / (abs(stock_momentum) + 1e-6)
 
-    end=time.perf_counter()
-    #print(f"add_e用时:{end-start}s")
     return e_features
 
 
 def create_all_features_enhanced(df, lst_tick_feature):
-    start = time.perf_counter()
     """增强版特征创建features+target"""
     #print("开始创建增强版特征...")
 
@@ -572,9 +560,6 @@ def create_all_features_enhanced(df, lst_tick_feature):
 
 
     all_features = all_features.fillna(0)
-    end=time.perf_counter()
-    #print(f"create_all_features总用时:{end-start}s")
-    #input()
     return all_features.iloc[[-1]]
 
 
